@@ -80,7 +80,10 @@ if [ "${DEBUG}" == "1" ]; then
 fi
 
 pushd "$PROJECT_DIR"
-
+echo "========== Go Environment =========="
+${GOBINARY:-go} version
+${GOBINARY:-go} env
+echo "======================================"
 time GOOS=${BUILD_GOOS} GOARCH=${BUILD_GOARCH} ${GOBINARY} build \
         ${V} "${GOBUILDFLAGS_ARRAY[@]}" ${GCFLAGS:+-gcflags "${GCFLAGS}"} \
         -o "${OUT}" \
