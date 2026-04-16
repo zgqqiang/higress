@@ -239,20 +239,20 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Build Gateway Image and Push
-        run: |
-          BUILT_IMAGE=""
-          readarray -t IMAGES <<< "${{ steps.docker-meta.outputs.tags }}"
-          for image in ${IMAGES[@]}; do
-            echo "Image: $image"
-            if [ "$BUILT_IMAGE" == "" ]; then
-              TAG=${image#*:}
-              HUB=${image%:*}
-              HUB=${HUB%/*}
-              BUILT_IMAGE="$HUB/proxyv2:$TAG"
-              GOPROXY="https://proxy.golang.org,direct" IMG_URL="$BUILT_IMAGE" make build-gateway
-            fi
-            if [ "$BUILT_IMAGE" != "$image" ]; then
-              docker buildx imagetools create $BUILT_IMAGE --tag $image
-            fi
-          done
+      # - name: Build Gateway Image and Push
+      #   run: |
+      #     BUILT_IMAGE=""
+      #     readarray -t IMAGES <<< "${{ steps.docker-meta.outputs.tags }}"
+      #     for image in ${IMAGES[@]}; do
+      #       echo "Image: $image"
+      #       if [ "$BUILT_IMAGE" == "" ]; then
+      #         TAG=${image#*:}
+      #         HUB=${image%:*}
+      #         HUB=${HUB%/*}
+      #         BUILT_IMAGE="$HUB/proxyv2:$TAG"
+      #         GOPROXY="https://proxy.golang.org,direct" IMG_URL="$BUILT_IMAGE" make build-gateway
+      #       fi
+      #       if [ "$BUILT_IMAGE" != "$image" ]; then
+      #         docker buildx imagetools create $BUILT_IMAGE --tag $image
+      #       fi
+      #     done
