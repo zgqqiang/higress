@@ -21,6 +21,7 @@ import (
 	"fmt"
 	higressconfig "github.com/alibaba/higress/v2/pkg/config"
 	"github.com/alibaba/higress/v2/pkg/ingress/kube/util"
+	"github.com/golang/protobuf/ptypes/duration"
 	"istio.io/istio/pilot/pkg/credentials"
 	"net"
 	"path"
@@ -174,6 +175,63 @@ func convertHTTPRoute(ctx RouteContext, r k8s.HTTPRouteRule,
 			vs.Rewrite = createRewriteFilter(filter.URLRewrite)
 		case k8s.HTTPRouteFilterCORS:
 			vs.CorsPolicy = createCorsFilter(filter.CORS)
+		case k8s.HTTPRouteFilterExtensionRef:
+			er := filter.ExtensionRef
+			if er == nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("filter type %q requires extensionRef, but got nil", filter.Type),
+				}
+			}
+
+			parts := strings.Split(string(er.Name), "-")
+			if len(parts) != 3 {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid ExtensionRef name format %q, expected format: {maxTokens}-{tokensPerFill}-{fillInterval}", er.Name),
+				}
+			}
+
+			// 解析并验证 maxTokens
+			maxTokens, err := strconv.ParseUint(parts[0], 10, 32)
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid maxTokens %q: must be uint32", parts[0]),
+				}
+			}
+
+			// 解析并验证 tokensPerFill
+			tokensPerFill, err := strconv.ParseUint(parts[1], 10, 32)
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid tokensPerFill %q: must be uint32", parts[1]),
+				}
+			}
+
+			// 解析并验证 fillInterval
+			fillInterval, err := time.ParseDuration(parts[2])
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid fillInterval %q: must be duration format (e.g., 1s, 1m, 1h)", parts[2]),
+				}
+			}
+
+			vs.RouteHTTPFilters = append(vs.RouteHTTPFilters, &istio.HTTPFilter{
+				Name: "local_rate_limit",
+				Filter: &istio.HTTPFilter_LocalRateLimit{
+					LocalRateLimit: &istio.LocalRateLimit{
+						TokenBucket: &istio.TokenBucket{
+							MaxTokens:     uint32(maxTokens),
+							TokensPefFill: uint32(tokensPerFill),
+							FillInterval:  &duration.Duration{Seconds: int64(fillInterval.Seconds())},
+						},
+						StatusCode: 429,
+					},
+				},
+			})
 		default:
 			return nil, nil, &ConfigError{
 				Reason:  InvalidFilter,
