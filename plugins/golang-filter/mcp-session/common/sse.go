@@ -140,10 +140,16 @@ func (s *SSEServer) HandleSSE(cb api.FilterCallbackHandler, stopChan chan struct
 
 	// Send the initial endpoint event
 	initialEvent := fmt.Sprintf("event: endpoint\ndata: %s\n\n", messageEndpoint)
-	err = s.redisClient.Publish(channel, initialEvent)
-	if err != nil {
-		api.LogErrorf("Failed to send initial event: %v", err)
-	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				api.LogErrorf("Failed to send initial event: %v", r)
+			}
+		}()
+		defer cb.EncoderFilterCallbacks().RecoverPanic()
+		api.LogDebugf("SSE Send message: %s", initialEvent)
+		cb.EncoderFilterCallbacks().InjectData([]byte(initialEvent))
+	}()
 
 	// Start health check handler
 	go func() {
@@ -225,6 +231,7 @@ func (s *SSEServer) HandleMessage(w http.ResponseWriter, r *http.Request, body j
 	var status int
 	// Only send response if there is one (not for notifications)
 	if response != nil {
+		w.Header().Set("Content-Type", "application/json")
 		if sessionID != "" {
 			w.WriteHeader(http.StatusAccepted)
 			status = http.StatusAccepted
@@ -234,7 +241,6 @@ func (s *SSEServer) HandleMessage(w http.ResponseWriter, r *http.Request, body j
 			status = http.StatusOK
 		}
 		// Send HTTP response
-		w.Header().Set("Content-Type", "application/json")
 		jsonData, err := json.Marshal(response)
 		if err != nil {
 			api.LogErrorf("Failed to marshal SSE Message response: %v", err)
