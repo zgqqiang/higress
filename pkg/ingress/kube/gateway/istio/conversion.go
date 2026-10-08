@@ -19,16 +19,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	higressconfig "github.com/alibaba/higress/v2/pkg/config"
-	"github.com/alibaba/higress/v2/pkg/ingress/kube/util"
-	"istio.io/istio/pilot/pkg/credentials"
 	"net"
 	"path"
-	inferencev1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	higressconfig "github.com/alibaba/higress/v2/pkg/config"
+	"github.com/alibaba/higress/v2/pkg/ingress/kube/util"
+	"github.com/golang/protobuf/ptypes/duration"
+	"istio.io/istio/pilot/pkg/credentials"
+	inferencev1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	"google.golang.org/protobuf/types/known/durationpb"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
@@ -141,6 +143,7 @@ func convertHTTPRoute(ctx RouteContext, r k8s.HTTPRouteRule,
 		})
 	}
 	var mirrorBackendErr *ConfigError
+	var ers []*k8s.LocalObjectReference
 	for _, filter := range r.Filters {
 		switch filter.Type {
 		case k8s.HTTPRouteFilterRequestHeaderModifier:
@@ -174,6 +177,14 @@ func convertHTTPRoute(ctx RouteContext, r k8s.HTTPRouteRule,
 			vs.Rewrite = createRewriteFilter(filter.URLRewrite)
 		case k8s.HTTPRouteFilterCORS:
 			vs.CorsPolicy = createCorsFilter(filter.CORS)
+		case k8s.HTTPRouteFilterExtensionRef:
+			if filter.ExtensionRef == nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("filter type %q requires extensionRef, but got nil", filter.Type),
+				}
+			}
+			ers = append(ers, filter.ExtensionRef)
 		default:
 			return nil, nil, &ConfigError{
 				Reason:  InvalidFilter,
@@ -226,6 +237,75 @@ func convertHTTPRoute(ctx RouteContext, r k8s.HTTPRouteRule,
 			}
 		}
 	}
+
+	for _, er := range ers {
+		if er == nil {
+			continue
+		}
+		switch er.Kind {
+		case "LocalRateLimit":
+			parts := strings.Split(string(er.Name), "-")
+			if len(parts) != 3 {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid ExtensionRef name format %q, expected format: {maxTokens}-{tokensPerFill}-{fillInterval}", er.Name),
+				}
+			}
+
+			// 解析并验证 maxTokens
+			maxTokens, err := strconv.ParseUint(parts[0], 10, 32)
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid maxTokens %q: must be uint32", parts[0]),
+				}
+			}
+
+			// 解析并验证 tokensPerFill
+			tokensPerFill, err := strconv.ParseUint(parts[1], 10, 32)
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid tokensPerFill %q: must be uint32", parts[1]),
+				}
+			}
+
+			// 解析并验证 fillInterval
+			fillInterval, err := time.ParseDuration(parts[2])
+			if err != nil {
+				return nil, nil, &ConfigError{
+					Reason:  InvalidFilter,
+					Message: fmt.Sprintf("invalid fillInterval %q: must be duration format (e.g., 1s, 1m, 1h)", parts[2]),
+				}
+			}
+
+			vs.RouteHTTPFilters = append(vs.RouteHTTPFilters, &istio.HTTPFilter{
+				Name: "local_rate_limit",
+				Filter: &istio.HTTPFilter_LocalRateLimit{
+					LocalRateLimit: &istio.LocalRateLimit{
+						TokenBucket: &istio.TokenBucket{
+							MaxTokens:     uint32(maxTokens),
+							TokensPefFill: uint32(tokensPerFill),
+							FillInterval:  &duration.Duration{Seconds: int64(fillInterval.Seconds())},
+						},
+						StatusCode: 429,
+					},
+				},
+			})
+
+		case "Retry":
+			vs.Retries = &istio.HTTPRetry{
+				// If unset, default is implementation specific.
+				// VirtualService.retry has no default when set -- users are expected to set it if they customize `retry`.
+				// However, the default retry if none are set is "2", so we use that as the default.
+				Attempts:      int32(2),
+				PerTryTimeout: nil,
+				RetryOn:       string(er.Name),
+			}
+
+		}
+	}
+
 	if weightSum(r.BackendRefs) == 0 && vs.Redirect == nil {
 		// The spec requires us to return 500 when there are no >0 weight backends
 		vs.DirectResponse = &istio.HTTPDirectResponse{
